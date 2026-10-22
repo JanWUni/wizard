@@ -2,6 +2,10 @@
 
 Ein erster spielbarer Prototyp mit deutschem Interface und einem magischen Kartentisch: allein gegen zwei Bots üben oder mit 3–6 Menschen auf einem Server spielen.
 
+## Neues 3D-Asset-Lab
+
+Für die grafische Neuausrichtung gibt es eine **separate Testszene `AssetLab.rbxl`**: dunkle magische Taverne, räumlicher Kartentisch, Sitzperspektive, sechs Kartenmuster mit Vorder-/Rückseiten und Kartenbewegungen. In Studio öffnen und **Spielen** drücken. Das bestehende Spiel bleibt bis zur Auswahl der Gestaltung unverändert. [Bedienung, Zielbild und Asset-Prüfung](docs/art/ASSET-LAB.md).
+
 ## Direkt in Roblox Studio starten
 
 1. Dieses Repository herunterladen oder klonen.

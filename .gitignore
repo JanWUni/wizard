@@ -1,5 +1,7 @@
 .DS_Store
 *.rbxl
+!AssetLab.rbxl
+AssetLab.rbxlx
 *.rbxl.lock
 *.rbxlx.lock
 build/

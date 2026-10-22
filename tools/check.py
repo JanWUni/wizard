@@ -10,10 +10,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--luau", default="luau")
 parser.add_argument("--compiler", default="luau-compile")
 parser.add_argument("--place-only", action="store_true")
+parser.add_argument("--lab", action="store_true")
 args = parser.parse_args()
 
 if not args.place_only:
-    sources = sorted((ROOT / "src").rglob("*.lua")) + sorted((ROOT / "tests").glob("*.lua"))
+    sources = (sorted((ROOT / "src").rglob("*.lua")) + sorted((ROOT / "tests").glob("*.lua"))
+               + sorted((ROOT / "lab").rglob("*.lua")) + sorted((ROOT / "tools").glob("*.luau")))
     for source in sources:
         subprocess.run([args.compiler, "--null", str(source)], check=True, stdout=subprocess.DEVNULL)
     print(f"Compiled {len(sources)} Luau files.", flush=True)
@@ -52,3 +54,30 @@ for cls, name, source in scripts:
     assert len(candidates) == 1
     assert source == candidates[0].read_text(), f"Place is stale: {candidates[0]}"
 print("Place verified: five scripts, correct script types, exact current sources.")
+
+if args.lab:
+    lab = ET.parse(ROOT / "AssetLab.rbxlx")
+    mapping = {
+        ("Script", "Main"): "lab/server/Main.server.lua",
+        ("LocalScript", "Main"): "lab/client/Main.client.lua",
+        **{("ModuleScript", name): f"src/assets/{name}.lua"
+           for name in ("ArtDirection", "CardModel", "Tavern", "TableLayout")},
+    }
+    found = set()
+    cards = 0
+    for item in lab.iter("Item"):
+        name = item.find("./Properties/string[@name='Name']")
+        if name is None:
+            continue
+        if item.get("class") == "SurfaceGui":
+            cards += 1
+        if item.get("class") not in ("Script", "LocalScript", "ModuleScript"):
+            continue
+        key = (item.get("class"), name.text)
+        assert key in mapping and key not in found, f"Unexpected lab script: {key}"
+        found.add(key)
+        source = item.find("./Properties/*[@name='Source']")
+        assert source is not None and source.text == (ROOT / mapping[key]).read_text(), f"Stale lab: {key}"
+    assert found == set(mapping) and cards == 12
+    assert lab.find(".//Item[@class='Model']/Properties/string[@name='Name'][.='TavernStudy']") is not None
+    print("Lab place verified: six current scripts, editable tavern, six baked samples and twelve card surfaces.")
