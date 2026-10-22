@@ -1,0 +1,11 @@
+{
+  "name": "Wizard",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": { "Shared": { "$path": "src/shared" } },
+    "ServerScriptService": { "WizardServer": { "$path": "src/server" } },
+    "StarterPlayer": {
+      "StarterPlayerScripts": { "WizardClient": { "$path": "src/client" } }
+    }
+  }
+}

@@ -1,0 +1,862 @@
+<roblox version="4">
+  <Item class="ReplicatedStorage" referent="0">
+    <Properties>
+      <string name="Name">ReplicatedStorage</string>
+    </Properties>
+    <Item class="Folder" referent="1">
+      <Properties>
+        <string name="Name">Shared</string>
+      </Properties>
+      <Item class="ModuleScript" referent="2">
+        <Properties>
+          <string name="Name">Rules</string>
+          <string name="Source"><![CDATA[-- Pure rules, usable both by Roblox and the standalone Luau test runner.
+local Rules = {}
+Rules.suits = { "red", "yellow", "green", "blue" }
+Rules.suitNames = { red = "Rot", yellow = "Gelb", green = "Grün", blue = "Blau" }
+
+function Rules.deck()
+    local deck = {}
+    for _, suit in ipairs(Rules.suits) do
+        for rank = 1, 13 do
+            table.insert(deck, { id = suit .. rank, kind = "number", suit = suit, rank = rank })
+        end
+    end
+    for i = 1, 4 do
+        table.insert(deck, { id = "wizard" .. i, kind = "wizard", rank = 0 })
+        table.insert(deck, { id = "jester" .. i, kind = "jester", rank = 0 })
+    end
+    return deck
+end
+
+function Rules.shuffle(deck, randomInteger)
+    for i = #deck, 2, -1 do
+        local j = randomInteger(1, i)
+        deck[i], deck[j] = deck[j], deck[i]
+    end
+    return deck
+end
+
+-- The first non-jester decides whether a suit must be followed.
+-- A Wizard after an established suit does NOT remove the obligation.
+function Rules.leadSuit(trick)
+    for _, play in ipairs(trick) do
+        if play.card.kind == "wizard" then return nil end
+        if play.card.kind == "number" then return play.card.suit end
+    end
+    return nil
+end
+
+function Rules.canPlay(hand, card, trick)
+    if card.kind ~= "number" then return true end
+    local lead = Rules.leadSuit(trick)
+    if not lead or card.suit == lead then return true end
+    for _, held in ipairs(hand) do
+        if held.kind == "number" and held.suit == lead then return false end
+    end
+    return true
+end
+
+function Rules.winner(trick, trump)
+    assert(#trick > 0, "Cannot resolve an empty trick")
+    for _, play in ipairs(trick) do
+        if play.card.kind == "wizard" then return play.seat end
+    end
+    local lead = Rules.leadSuit(trick)
+    local best, strength = trick[1].seat, -1
+    for _, play in ipairs(trick) do
+        local card = play.card
+        local value = 0
+        if card.kind == "number" then
+            if card.suit == trump then value = 100 + card.rank
+            elseif card.suit == lead then value = card.rank end
+        end
+        if value > strength then best, strength = play.seat, value end
+    end
+    return best
+end
+
+function Rules.score(bid, taken)
+    if bid == taken then return 20 + 10 * taken end
+    return -10 * math.abs(bid - taken)
+end
+
+function Rules.integer(value, minimum, maximum)
+    return type(value) == "number" and value == value
+        and value >= minimum and value <= maximum and value % 1 == 0
+end
+
+return Rules
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="ServerScriptService" referent="3">
+    <Properties>
+      <string name="Name">ServerScriptService</string>
+    </Properties>
+    <Item class="Folder" referent="4">
+      <Properties>
+        <string name="Name">WizardServer</string>
+      </Properties>
+      <Item class="ModuleScript" referent="5">
+        <Properties>
+          <string name="Name">Engine</string>
+          <string name="Source"><![CDATA[local Rules = if script then require(game:GetService("ReplicatedStorage").Shared.Rules)
+    else require("../shared/Rules")
+local Engine = {}
+Engine.__index = Engine
+
+function Engine.new(seats, randomInteger)
+    assert(#seats >= 3 and #seats <= 6, "Wizard needs 3–6 seats")
+    local self = setmetatable({}, Engine)
+    self.seats, self.randomInteger = {}, randomInteger
+    self.round, self.dealer, self.revision = 0, #seats, 0
+    self.maxRounds, self.history = math.floor(60 / #seats), {}
+    for _, seat in ipairs(seats) do
+        table.insert(self.seats, { id = seat.id, name = seat.name, bot = seat.bot == true,
+            score = 0, taken = 0, hand = {} })
+    end
+    self:nextRound()
+    return self
+end
+
+function Engine:nextSeat(seat) return seat % #self.seats + 1 end
+
+function Engine:nextRound()
+    assert(self.round == 0 or self.phase == "roundComplete", "Round is not complete")
+    self.round += 1
+    self.dealer = self:nextSeat(self.dealer)
+    self.leader = self:nextSeat(self.dealer)
+    self.turn, self.trick, self.trickNumber, self.lastWinner = self.leader, {}, 1, nil
+    self.trump, self.turnedCard = nil, nil
+    local deck = Rules.shuffle(Rules.deck(), self.randomInteger)
+    local cursor = 1
+    for _, seat in ipairs(self.seats) do seat.hand, seat.bid, seat.taken, seat.delta = {}, nil, 0, nil end
+    for _ = 1, self.round do
+        for offset = 1, #self.seats do
+            local seat = self.seats[(self.dealer + offset - 1) % #self.seats + 1]
+            table.insert(seat.hand, deck[cursor])
+            cursor += 1
+        end
+    end
+    self.turnedCard = deck[cursor]
+    if self.turnedCard and self.turnedCard.kind == "wizard" then
+        self.phase, self.turn = "chooseTrump", self.dealer
+    else
+        if self.turnedCard and self.turnedCard.kind == "number" then self.trump = self.turnedCard.suit end
+        self.phase = "bidding"
+    end
+    self.revision += 1
+end
+
+function Engine:act(seatIndex, action, value)
+    if seatIndex ~= self.turn then return false, "Du bist noch nicht am Zug." end
+    local seat = self.seats[seatIndex]
+    if self.phase == "chooseTrump" and action == "trump" then
+        if type(value) ~= "string" or not table.find(Rules.suits, value) then
+            return false, "Wähle eine der vier Farben."
+        end
+        self.trump, self.phase, self.turn = value, "bidding", self.leader
+    elseif self.phase == "bidding" and action == "bid" then
+        if not Rules.integer(value, 0, self.round) then return false, "Ungültige Stichansage." end
+        seat.bid = value
+        self.turn = self:nextSeat(self.turn)
+        if self.turn == self.leader then self.phase = "playing" end
+    elseif self.phase == "playing" and action == "play" then
+        if type(value) ~= "string" or #value > 24 then return false, "Ungültige Karte." end
+        local index
+        for i, card in ipairs(seat.hand) do if card.id == value then index = i; break end end
+        if not index then return false, "Diese Karte hast du nicht auf der Hand." end
+        if not Rules.canPlay(seat.hand, seat.hand[index], self.trick) then
+            return false, "Du musst die angespielte Farbe bedienen."
+        end
+        table.insert(self.trick, { seat = seatIndex, card = table.remove(seat.hand, index) })
+        self.turn = self:nextSeat(self.turn)
+        if #self.trick == #self.seats then
+            self.lastWinner = Rules.winner(self.trick, self.trump)
+            self.seats[self.lastWinner].taken += 1
+            self.phase, self.turn = "trickComplete", nil
+        end
+    else
+        return false, "Diese Aktion ist gerade nicht möglich."
+    end
+    self.revision += 1
+    return true
+end
+
+function Engine:advance()
+    if self.phase == "trickComplete" then
+        if self.trickNumber == self.round then
+            local results = {}
+            for i, seat in ipairs(self.seats) do
+                seat.delta = Rules.score(seat.bid, seat.taken)
+                seat.score += seat.delta
+                results[i] = { bid = seat.bid, taken = seat.taken, delta = seat.delta, score = seat.score }
+            end
+            table.insert(self.history, results)
+            self.phase = if self.round == self.maxRounds then "finished" else "roundComplete"
+        else
+            self.trickNumber += 1
+            self.trick, self.turn, self.phase = {}, self.lastWinner, "playing"
+        end
+        self.revision += 1
+    elseif self.phase == "roundComplete" then self:nextRound()
+    else return false end
+    return true
+end
+
+function Engine:seatFor(id)
+    for i, seat in ipairs(self.seats) do if seat.id == id then return i end end
+    return nil
+end
+
+function Engine:view(id)
+    local mine = self:seatFor(id)
+    local view = { phase = self.phase, round = self.round, maxRounds = self.maxRounds,
+        dealer = self.dealer, turn = self.turn, trump = self.trump, turnedCard = self.turnedCard,
+        trickNumber = self.trickNumber, lastWinner = self.lastWinner, revision = self.revision,
+        seats = {}, trick = {}, hand = {}, legal = {}, history = {}, mySeat = mine }
+    for i, seat in ipairs(self.seats) do
+        view.seats[i] = { id = seat.id, name = seat.name, bot = seat.bot, score = seat.score,
+            bid = seat.bid, taken = seat.taken, count = #seat.hand, delta = seat.delta }
+    end
+    for i, play in ipairs(self.trick) do
+        view.trick[i] = { seat = play.seat, card = table.clone(play.card) }
+    end
+    if self.turnedCard then view.turnedCard = table.clone(self.turnedCard) end
+    if mine then
+        for _, card in ipairs(self.seats[mine].hand) do
+            table.insert(view.hand, table.clone(card))
+            if self.phase == "playing" and self.turn == mine
+                and Rules.canPlay(self.seats[mine].hand, card, self.trick) then view.legal[card.id] = true end
+        end
+    end
+    for r, row in ipairs(self.history) do
+        view.history[r] = {}
+        for i, result in ipairs(row) do view.history[r][i] = table.clone(result) end
+    end
+    return view
+end
+
+-- Simple practice opponent: uses its own hand and public trick only.
+function Engine:autoAction()
+    local seat = self.seats[self.turn]
+    if self.phase == "chooseTrump" then
+        local best, weight = Rules.suits[1], -1
+        for _, suit in ipairs(Rules.suits) do
+            local total = 0
+            for _, card in ipairs(seat.hand) do if card.suit == suit then total += card.rank end end
+            if total > weight then best, weight = suit, total end
+        end
+        return "trump", best
+    elseif self.phase == "bidding" then
+        local estimate = 0
+        for _, card in ipairs(seat.hand) do
+            if card.kind == "wizard" then estimate += 1
+            elseif card.kind == "number" then
+                if card.suit == self.trump then estimate += 0.55 + card.rank / 40
+                elseif card.rank >= 11 then estimate += 0.35 end
+            end
+        end
+        return "bid", math.clamp(math.floor(estimate + 0.25), 0, self.round)
+    elseif self.phase == "playing" then
+        local choices = {}
+        for _, card in ipairs(seat.hand) do
+            if Rules.canPlay(seat.hand, card, self.trick) then table.insert(choices, card) end
+        end
+        local function strength(card)
+            if card.kind == "wizard" then return 100 end
+            if card.kind == "jester" then return 0 end
+            return card.rank + (if card.suit == self.trump then 20 else 0)
+        end
+        table.sort(choices, function(a, b) return strength(a) < strength(b) end)
+        if seat.taken < seat.bid then
+            for _, card in ipairs(choices) do
+                local trial = table.clone(self.trick)
+                table.insert(trial, { seat = self.turn, card = card })
+                if Rules.winner(trial, self.trump) == self.turn then return "play", card.id end
+            end
+        end
+        return "play", choices[1].id
+    end
+    error("No automatic action available in " .. self.phase)
+end
+
+return Engine
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="Script" referent="6">
+        <Properties>
+          <string name="Name">Main</string>
+          <token name="RunContext">0</token>
+          <string name="Source"><![CDATA[local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Engine = require(script.Parent.Engine)
+local World = require(script.Parent.World)
+World.build()
+Players.CharacterAutoLoads = false
+
+local remotes = Instance.new("Folder")
+remotes.Name, remotes.Parent = "WizardRemotes", ReplicatedStorage
+local action = Instance.new("RemoteEvent")
+action.Name, action.Parent = "Action", remotes
+local state = Instance.new("RemoteEvent")
+state.Name, state.Parent = "State", remotes
+
+local match, hostId, deadline
+local order, buckets = {}, {}
+local epoch = 0
+local random = Random.new()
+local TURN_SECONDS = 45
+
+local function host()
+    if hostId and Players:GetPlayerByUserId(hostId) then return hostId end
+    hostId = nil
+    -- Give control to a participant before considering spectators.
+    if match then
+        for _, seat in ipairs(match.seats) do
+            if not seat.bot and Players:GetPlayerByUserId(seat.id) then hostId = seat.id; return hostId end
+        end
+    end
+    for _, id in ipairs(order) do
+        if Players:GetPlayerByUserId(id) then hostId = id; break end
+    end
+    return hostId
+end
+
+local function send(player)
+    local view
+    if match then view = match:view(player.UserId)
+    else
+        view = { phase = "lobby", seats = {}, revision = 0 }
+        for _, id in ipairs(order) do
+            local member = Players:GetPlayerByUserId(id)
+            if member then table.insert(view.seats, { id = id, name = member.DisplayName }) end
+        end
+    end
+    view.hostId, view.deadline, view.epoch = host(), deadline, epoch
+    state:FireClient(player, view)
+end
+
+local function publish()
+    for _, player in ipairs(Players:GetPlayers()) do send(player) end
+end
+
+local function schedule()
+    if not match or match.phase == "finished" then deadline = nil; return end
+    local duration
+    if match.phase == "trickComplete" then duration = 2.5
+    elseif match.phase == "roundComplete" then duration = 8
+    elseif match.seats[match.turn].bot then duration = 1.2
+    else duration = TURN_SECONDS end
+    deadline = workspace:GetServerTimeNow() + duration
+end
+
+local function start(player, mode)
+    if match then return end
+    local seats = {}
+    if mode == "practice" then
+        -- Practice can be started by anyone and only seats the requester.
+        table.insert(seats, { id = player.UserId, name = player.DisplayName })
+        table.insert(seats, { id = -1, name = "Mira", bot = true })
+        table.insert(seats, { id = -2, name = "Orion", bot = true })
+    elseif mode == "friends" then
+        if player.UserId ~= host() then return end
+        for _, id in ipairs(order) do
+            local member = Players:GetPlayerByUserId(id)
+            if member and #seats < 6 then table.insert(seats, { id = id, name = member.DisplayName }) end
+        end
+        if #seats < 3 then
+            state:FireClient(player, { error = "Für eine Mehrspielerpartie braucht ihr mindestens 3 Spieler." })
+            return
+        end
+    else return end
+    match = Engine.new(seats, function(a, b) return random:NextInteger(a, b) end)
+    hostId, epoch = player.UserId, epoch + 1
+    schedule()
+    publish()
+end
+
+-- A token bucket limits all remote requests, including initial state requests.
+local function allowed(player)
+    local now = os.clock()
+    local bucket = buckets[player.UserId] or { tokens = 12, time = now }
+    bucket.tokens = math.min(12, bucket.tokens + (now - bucket.time) * 4)
+    bucket.time = now
+    buckets[player.UserId] = bucket
+    if bucket.tokens < 1 then return false end
+    bucket.tokens -= 1
+    return true
+end
+
+action.OnServerEvent:Connect(function(player, verb, value, revision, clientEpoch)
+    if not allowed(player) or type(verb) ~= "string" or #verb > 16 then return end
+    if verb == "sync" then send(player); return end
+    if verb == "start" then start(player, value); return end
+    if verb == "lobby" then
+        if match and match.phase == "finished" and player.UserId == host() then
+            match, deadline = nil, nil
+            epoch += 1
+            publish()
+        end
+        return
+    end
+    if not match then return end
+    if revision ~= match.revision or clientEpoch ~= epoch then send(player); return end
+    local seatIndex = match:seatFor(player.UserId)
+    if not seatIndex or match.seats[seatIndex].bot then return end
+    local ok, message = match:act(seatIndex, verb, value)
+    if ok then schedule(); publish()
+    else state:FireClient(player, { error = message }) end
+end)
+
+local function joined(player)
+    if not table.find(order, player.UserId) then table.insert(order, player.UserId) end
+    publish()
+end
+Players.PlayerAdded:Connect(joined)
+for _, player in ipairs(Players:GetPlayers()) do joined(player) end
+
+Players.PlayerRemoving:Connect(function(player)
+    local index = table.find(order, player.UserId)
+    if index then table.remove(order, index) end
+    buckets[player.UserId] = nil
+    if hostId == player.UserId then hostId = nil end
+    if match then
+        local seatIndex = match:seatFor(player.UserId)
+        if seatIndex then
+            match.seats[seatIndex].bot = true
+            match.seats[seatIndex].name ..= " (Bot)"
+            match.revision += 1
+            if match.turn == seatIndex then schedule() end
+        end
+        local humans = 0
+        for _, seat in ipairs(match.seats) do if not seat.bot then humans += 1 end end
+        if humans == 0 then match, deadline = nil, nil; epoch += 1 end
+    end
+    publish()
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+        if match and deadline and workspace:GetServerTimeNow() >= deadline then
+            if match.phase == "trickComplete" or match.phase == "roundComplete" then match:advance()
+            elseif match.turn then
+                local verb, value = match:autoAction()
+                match:act(match.turn, verb, value)
+            end
+            schedule()
+            publish()
+        end
+    end
+end)
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="7">
+        <Properties>
+          <string name="Name">World</string>
+          <string name="Source"><![CDATA[local World = {}
+
+function World.build()
+    local Lighting = game:GetService("Lighting")
+    Lighting.ClockTime = 0
+    Lighting.Brightness = 1.5
+    Lighting.Ambient = Color3.fromRGB(60, 49, 87)
+    Lighting.OutdoorAmbient = Color3.fromRGB(24, 28, 50)
+    Lighting.FogColor = Color3.fromRGB(14, 15, 30)
+    Lighting.FogStart, Lighting.FogEnd = 40, 140
+    local bloom = Instance.new("BloomEffect")
+    bloom.Intensity, bloom.Size, bloom.Threshold = 0.4, 32, 1.2
+    bloom.Parent = Lighting
+    local model = Instance.new("Model")
+    model.Name, model.Parent = "ArcaneHall", workspace
+
+    local function part(name, size, position, color, material, shape)
+        local object = Instance.new("Part")
+        object.Name, object.Size, object.Position = name, size, position
+        object.Color, object.Material = color, material or Enum.Material.Slate
+        object.Anchored, object.CanCollide = true, false
+        if shape then object.Shape = shape end
+        object.Parent = model
+        return object
+    end
+    local stone = Color3.fromRGB(32, 31, 48)
+    local gold = Color3.fromRGB(170, 129, 67)
+    part("Floor", Vector3.new(150, 1, 150), Vector3.new(0, -1, 0), stone)
+    local tableBase = part("TableRim", Vector3.new(1, 26, 26), Vector3.new(0, 4, 0), gold, Enum.Material.Metal, Enum.PartType.Cylinder)
+    tableBase.CFrame = CFrame.new(0, 4, 0) * CFrame.Angles(0, 0, math.pi / 2)
+    local felt = part("Velvet", Vector3.new(0.25, 24.5, 24.5), Vector3.new(0, 4.7, 0), Color3.fromRGB(24, 58, 59), Enum.Material.Fabric, Enum.PartType.Cylinder)
+    felt.CFrame = CFrame.new(0, 4.7, 0) * CFrame.Angles(0, 0, math.pi / 2)
+    for i = 1, 12 do
+        local angle = i * math.pi / 6
+        local x, z = math.cos(angle) * 27, math.sin(angle) * 27
+        part("Pillar", Vector3.new(3, 23, 3), Vector3.new(x, 10, z), stone, Enum.Material.Marble)
+        part("Capital", Vector3.new(4.2, 0.8, 4.2), Vector3.new(x, 21.5, z), gold, Enum.Material.Metal)
+        local orb = part("ArcaneLight", Vector3.new(1.7, 1.7, 1.7), Vector3.new(x * 0.8, 9, z * 0.8),
+            Color3.fromRGB(148, 115, 255), Enum.Material.Neon, Enum.PartType.Ball)
+        local light = Instance.new("PointLight")
+        light.Color, light.Brightness, light.Range = orb.Color, 2, 20
+        light.Parent = orb
+    end
+    for i = 1, 6 do
+        local angle = (i - 1) * math.pi / 3
+        local position = Vector3.new(math.cos(angle) * 16, 3, math.sin(angle) * 16)
+        part("Chair", Vector3.new(4, 1, 4), position, Color3.fromRGB(69, 42, 84), Enum.Material.Fabric)
+    end
+end
+
+return World
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="StarterPlayer" referent="8">
+    <Properties>
+      <string name="Name">StarterPlayer</string>
+    </Properties>
+    <Item class="StarterPlayerScripts" referent="9">
+      <Properties>
+        <string name="Name">StarterPlayerScripts</string>
+      </Properties>
+      <Item class="Folder" referent="10">
+        <Properties>
+          <string name="Name">WizardClient</string>
+        </Properties>
+        <Item class="LocalScript" referent="11">
+          <Properties>
+            <string name="Name">Main</string>
+            <string name="Source"><![CDATA[local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local StarterGui = game:GetService("StarterGui")
+local player = Players.LocalPlayer
+local Rules = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Rules"))
+local remotes = ReplicatedStorage:WaitForChild("WizardRemotes")
+local action = remotes:WaitForChild("Action")
+local state = remotes:WaitForChild("State")
+
+local C = {
+    ink = Color3.fromRGB(15, 19, 32), panel = Color3.fromRGB(27, 32, 48),
+    text = Color3.fromRGB(242, 234, 218), muted = Color3.fromRGB(164, 169, 188),
+    gold = Color3.fromRGB(226, 189, 113), purple = Color3.fromRGB(173, 142, 245),
+    green = Color3.fromRGB(106, 216, 178), red = Color3.fromRGB(238, 118, 131),
+}
+local suitColors = { red = Color3.fromRGB(195, 70, 83), yellow = Color3.fromRGB(176, 125, 37),
+    green = Color3.fromRGB(37, 132, 112), blue = Color3.fromRGB(55, 108, 185),
+    wizard = Color3.fromRGB(112, 70, 169), jester = Color3.fromRGB(83, 92, 112) }
+local symbols = { red = "◆", yellow = "☀", green = "♣", blue = "≋", wizard = "W", jester = "N" }
+local current, render, modal
+local bidValue, bidRound, bidEpoch = 0, nil, nil
+local pending = false
+local handScroll = Vector2.zero
+local lastHand
+
+local function create(class, parent, properties)
+    local instance = Instance.new(class)
+    for key, value in pairs(properties or {}) do instance[key] = value end
+    instance.Parent = parent
+    return instance
+end
+local function corner(object, radius)
+    create("UICorner", object, { CornerRadius = UDim.new(0, radius or 14) })
+end
+local function stroke(object, color, thickness, transparency)
+    return create("UIStroke", object, { Color = color, Thickness = thickness or 1,
+        Transparency = transparency or 0 })
+end
+local function frame(parent, x, y, w, h, color, transparency)
+    return create("Frame", parent, { Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
+        BackgroundColor3 = color or C.panel, BackgroundTransparency = transparency or 0, BorderSizePixel = 0 })
+end
+local function label(parent, text, x, y, w, h, size, color, alignment)
+    return create("TextLabel", parent, { Text = text, Position = UDim2.fromOffset(x, y),
+        Size = UDim2.fromOffset(w, h), BackgroundTransparency = 1, TextColor3 = color or C.text,
+        Font = Enum.Font.GothamMedium, TextSize = size or 18, TextWrapped = true,
+        TextXAlignment = alignment or Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center })
+end
+local function button(parent, text, x, y, w, h, callback, color, disabled)
+    local object = create("TextButton", parent, { Text = text, Position = UDim2.fromOffset(x, y),
+        Size = UDim2.fromOffset(w, h), BackgroundColor3 = color or C.gold, BorderSizePixel = 0,
+        TextColor3 = if disabled then C.muted else C.ink, TextSize = 16, Font = Enum.Font.GothamBold,
+        AutoButtonColor = not disabled, Active = not disabled, Selectable = not disabled })
+    if disabled then object.BackgroundColor3 = C.panel end
+    corner(object, 10)
+    object.Activated:Connect(function() if not disabled then callback() end end)
+    return object
+end
+local function request(verb, value)
+    if pending then return end
+    pending = true
+    action:FireServer(verb, value, current and current.revision, current and current.epoch)
+    task.delay(0.8, function() pending = false end)
+end
+
+local gui = create("ScreenGui", player:WaitForChild("PlayerGui"), {
+    Name = "WizardUI", ResetOnSpawn = false, IgnoreGuiInset = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling })
+local background = create("Frame", gui, { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0,
+    BackgroundColor3 = C.ink, BackgroundTransparency = 0.28 })
+local root = create("Frame", background, { Size = UDim2.fromOffset(1280, 800),
+    AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), BackgroundTransparency = 1 })
+local scale = create("UIScale", root, {})
+local function resize()
+    scale.Scale = math.min(background.AbsoluteSize.X / 1280, background.AbsoluteSize.Y / 800)
+end
+background:GetPropertyChangedSignal("AbsoluteSize"):Connect(resize)
+resize()
+
+local content = frame(root, 0, 0, 1280, 800, C.ink, 1)
+label(root, "W I Z A R D", 34, 12, 320, 48, 34, C.gold, Enum.TextXAlignment.Left)
+label(root, "D E R   M A G I S C H E   K A R T E N T I S C H", 36, 57, 410, 20, 11, C.muted, Enum.TextXAlignment.Left)
+local status = label(root, "Verbindung zum Tisch …", 485, 16, 440, 42, 18)
+local timer = label(root, "", 940, 20, 80, 35, 17, C.gold)
+local toast = label(root, "", 210, 778, 860, 22, 14, C.red)
+
+local function notify(message)
+    toast.Text = message
+    task.delay(4, function() if toast.Text == message then toast.Text = "" end end)
+end
+
+local function card(parent, data, x, y, width, height, playable, callback)
+    local suit = if data.kind == "number" then data.suit else data.kind
+    local color = suitColors[suit]
+    local object = create("TextButton", parent, { Text = "", BackgroundColor3 = Color3.fromRGB(242, 232, 208),
+        Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(width, height), BorderSizePixel = 0,
+        AutoButtonColor = false, Selectable = playable == true })
+    corner(object, 10)
+    stroke(object, if playable then C.gold else color, if playable then 3 else 1)
+    local inset = frame(object, 6, 6, width - 12, height - 12, color)
+    corner(inset, 7)
+    create("UIGradient", inset, { Color = ColorSequence.new(color:Lerp(Color3.new(1, 1, 1), 0.15), color) })
+    local value = if data.kind == "number" then tostring(data.rank) else symbols[suit]
+    label(object, value, 8, 7, 34, 27, math.min(22, width * 0.25))
+    label(object, symbols[suit], 0, height * 0.24, width, height * 0.42, width * 0.43)
+    local name = if data.kind == "wizard" then "WIZARD" elseif data.kind == "jester" then "NARR" else Rules.suitNames[data.suit]
+    label(object, name, 5, height - 33, width - 10, 22, math.min(12, width * 0.12))
+    if playable == false then
+        local shade = frame(object, 0, 0, width, height, C.ink, 0.52)
+        corner(shade, 10)
+    end
+    if playable and callback then
+        object.Activated:Connect(callback)
+        object.MouseEnter:Connect(function()
+            TweenService:Create(object, TweenInfo.new(0.12), { Position = UDim2.fromOffset(x, y - 8) }):Play()
+        end)
+        object.MouseLeave:Connect(function()
+            TweenService:Create(object, TweenInfo.new(0.12), { Position = UDim2.fromOffset(x, y) }):Play()
+        end)
+    end
+    return object
+end
+
+local function openModal(title)
+    if modal then modal:Destroy() end
+    modal = frame(root, 0, 0, 1280, 800, C.ink, 0.1)
+    modal.ZIndex = 10
+    local panel = frame(modal, 210, 80, 860, 650, C.panel)
+    corner(panel, 20); stroke(panel, C.gold, 1, 0.5)
+    label(panel, title, 35, 20, 700, 45, 25, C.gold, Enum.TextXAlignment.Left)
+    button(panel, "Schließen", 680, 25, 145, 40, function() modal:Destroy(); modal = nil end)
+    return panel
+end
+
+button(root, "Punkte", 1030, 22, 100, 40, function()
+    local panel = openModal("Block der Wahrheit")
+    if not current or not current.history or #current.history == 0 then
+        label(panel, "Nach der ersten Runde erscheint hier euer Punkteverlauf.", 50, 140, 760, 100, 20)
+        return
+    end
+    local scroll = create("ScrollingFrame", panel, { Position = UDim2.fromOffset(25, 90),
+        Size = UDim2.fromOffset(810, 530), CanvasSize = UDim2.fromOffset(0, 45 + #current.history * 38),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 5 })
+    label(scroll, "Runde", 0, 0, 80, 35, 14, C.muted)
+    local width = 710 / #current.seats
+    for i, seat in ipairs(current.seats) do label(scroll, seat.name, 80 + (i - 1) * width, 0, width, 35, 13, C.gold) end
+    for r, row in ipairs(current.history) do
+        label(scroll, tostring(r), 0, r * 38, 80, 35, 16)
+        for i, result in ipairs(row) do
+            label(scroll, string.format("%d/%d · %d P.", result.taken, result.bid, result.score),
+                80 + (i - 1) * width, r * 38, width, 35, 14, if result.delta >= 0 then C.green else C.red)
+        end
+    end
+end, C.purple)
+
+button(root, "Spielregeln", 1140, 22, 110, 40, function()
+    local panel = openModal("So spielst du Wizard")
+    local text = "1   Sage voraus, wie viele Stiche du in dieser Runde gewinnst. In Runde 1 erhältst du eine Karte, in Runde 2 zwei – und so weiter.\n\n"
+        .. "2   Spiele reihum eine Karte. Du musst die zuerst angespielte Farbe bedienen, wenn du sie hast. Wizards und Narren darfst du immer spielen. Gold umrandete Karten sind spielbar.\n\n"
+        .. "3   Der erste Wizard gewinnt. Sonst gewinnt der höchste Trumpf, sonst die höchste Karte der angespielten Farbe. Nur Narren? Der erste Narr gewinnt. Ein eröffnender Wizard hebt die Bedienpflicht auf; nach eröffnenden Narren entscheidet die erste andere Karte.\n\n"
+        .. "4   Genau richtig angesagt: 20 Punkte plus 10 pro Stich. Daneben: minus 10 pro Stich Abweichung. Die Summe aller Ansagen darf der Stichzahl entsprechen (Grundregel).\n\n"
+        .. "Die aufgedeckte Karte bestimmt Trumpf. Bei einem Wizard wählt der Geber eine Farbe; bei einem Narren oder leerem Stapel gibt es keinen Trumpf. Der Stichgewinner spielt als Nächstes aus.\n\n"
+        .. "Du hast 45 Sekunden pro Zug. Danach spielt der Assistent für dich. Bei Verbindungsabbruch übernimmt ein Bot. Auf kleinen Displays empfiehlt sich Querformat."
+    local body = label(panel, text, 40, 85, 780, 530, 17, C.text, Enum.TextXAlignment.Left)
+    body.TextYAlignment = Enum.TextYAlignment.Top
+end)
+
+local function lobby(view)
+    status.Text = "Die Akademie wartet auf dich"
+    local panel = frame(content, 310, 190, 660, 365, C.panel, 0.05)
+    corner(panel, 22); stroke(panel, C.gold, 1, 0.5)
+    label(panel, "Dein nächster Stich ist Magie.", 35, 25, 590, 60, 30, C.gold)
+    label(panel, "Schätze deine Stiche. Spiele deine Karten.\nBeweise deine Gabe der Vorhersehung.", 55, 92, 550, 60, 19, C.text)
+    button(panel, "Mit Bots üben", 55, 178, 260, 56, function() request("start", "practice") end)
+    local canStart = view.hostId == player.UserId and #view.seats >= 3
+    button(panel, "Mehrspieler starten", 330, 178, 275, 56, function() request("start", "friends") end, C.purple, not canStart)
+    label(panel, string.format("%d Spieler in der Lobby · 3–6 pro Partie", #view.seats), 55, 251, 550, 28, 16, C.muted)
+    local names = {}
+    for _, seat in ipairs(view.seats) do table.insert(names, seat.name) end
+    label(panel, table.concat(names, "  ·  "), 40, 282, 580, 45, 16)
+    label(content, "Übungsmodus: du + Mira + Orion\nMehrspieler: Der Gastgeber startet, sobald mindestens 3 Spieler da sind.",
+        310, 585, 660, 65, 16, C.muted)
+end
+
+render = function(view)
+    if lastHand and lastHand.Parent then handScroll = lastHand.CanvasPosition end
+    content:ClearAllChildren()
+    if view.phase == "lobby" then lobby(view); return end
+    if bidRound ~= view.round or bidEpoch ~= view.epoch then
+        bidRound, bidEpoch, bidValue = view.round, view.epoch, 0
+    end
+    status.Text = string.format("Runde %d / %d   ·   Stich %d / %d", view.round, view.maxRounds, view.trickNumber, view.round)
+    local seatWidth = 1200 / #view.seats
+    for i, seat in ipairs(view.seats) do
+        local isTurn = view.turn == i
+        local panel = frame(content, 40 + (i - 1) * seatWidth, 100, seatWidth - 10, 95, C.panel, 0.08)
+        corner(panel, 12)
+        if isTurn then stroke(panel, C.gold, 2) end
+        local suffix = if seat.bot then " · BOT" elseif view.mySeat == i then " · DU" else ""
+        local name = label(panel, seat.name .. suffix, 10, 6, seatWidth - 30, 27, 16, if isTurn then C.gold else C.text)
+        name.TextTruncate = Enum.TextTruncate.AtEnd
+        name.TextWrapped = false
+        label(panel, string.format("%d Punkte   ·   %d Karten", seat.score, seat.count), 8, 35, seatWidth - 26, 22, 14, C.muted)
+        label(panel, "Stiche: " .. seat.taken .. " / " .. (if seat.bid ~= nil then tostring(seat.bid) else "–")
+            .. (if view.dealer == i then "   ◇ Geber" else ""), 8, 60, seatWidth - 26, 24, 14, C.text)
+    end
+    local tableFrame = frame(content, 190, 222, 900, 280, Color3.fromRGB(22, 58, 58), 0.12)
+    corner(tableFrame, 130); stroke(tableFrame, C.gold, 2, 0.35)
+    local inner = frame(tableFrame, 13, 13, 874, 254, Color3.fromRGB(22, 58, 58), 1)
+    corner(inner, 120); stroke(inner, C.gold, 1, 0.78)
+    label(tableFrame, "A K A D E M I E   D E R   V O R H E R S E H U N G", 100, 14, 700, 24, 11, C.gold)
+    if #view.trick == 0 then
+        label(tableFrame, "W", 350, 65, 200, 100, 80, C.gold).TextTransparency = 0.75
+        label(tableFrame, "Jede Karte erzählt dein Schicksal.", 200, 175, 500, 35, 16, C.muted)
+    else
+        local width, gap = 100, 18
+        local startX = (900 - (#view.trick * (width + gap) - gap)) / 2
+        for i, play in ipairs(view.trick) do
+            local x = startX + (i - 1) * (width + gap)
+            card(tableFrame, play.card, x, 56, width, 148, nil)
+            label(tableFrame, view.seats[play.seat].name, x - 9, 211, width + 18, 30, 13,
+                if play.seat == view.lastWinner and view.phase ~= "playing" then C.gold else C.text)
+        end
+    end
+    label(content, "T R U M P F", 30, 225, 145, 30, 12, C.muted)
+    local trumpName = if view.phase == "chooseTrump" then "Wird gewählt …" elseif view.trump then Rules.suitNames[view.trump] else "Kein Trumpf"
+    label(content, trumpName, 30, 258, 145, 30, 20, C.gold)
+    if view.turnedCard then card(content, view.turnedCard, 57, 300, 90, 132, nil)
+    else label(content, "Alle Karten\nsind verteilt.", 30, 318, 145, 75, 16, C.muted) end
+    label(content, "DEIN ZIEL", 1110, 260, 140, 30, 12, C.muted)
+    local mine = view.mySeat and view.seats[view.mySeat]
+    if mine then
+        label(content, tostring(mine.taken) .. " / " .. (if mine.bid ~= nil then tostring(mine.bid) else "–"), 1110, 297, 140, 60, 34, C.gold)
+        label(content, "Stiche / Ansage", 1110, 358, 140, 35, 14, C.muted)
+    else label(content, "Zuschauer", 1110, 300, 140, 45, 18, C.gold) end
+
+    local message = ""
+    if view.phase == "trickComplete" then message = view.seats[view.lastWinner].name .. " gewinnt den Stich."
+    elseif view.phase == "roundComplete" then message = "Runde beendet. Die nächste Runde beginnt gleich."
+    elseif view.phase == "finished" then
+        local high, winners = -math.huge, {}
+        for _, seat in ipairs(view.seats) do
+            if seat.score > high then high, winners = seat.score, { seat.name }
+            elseif seat.score == high then table.insert(winners, seat.name) end
+        end
+        message = table.concat(winners, " & ") .. " gewinnt!  ·  " .. high .. " Punkte"
+    elseif view.turn then
+        local who = if view.turn == view.mySeat then "Du bist" else view.seats[view.turn].name .. " ist"
+        message = who .. (if view.phase == "bidding" then " mit der Ansage dran." elseif view.phase == "chooseTrump" then " mit der Trumpfwahl dran." else " am Zug.")
+    end
+    label(content, message, 190, 478, 900, 36, 20, C.gold)
+    local controls = frame(content, 190, 526, 900, 59, C.panel, 0.1)
+    corner(controls, 12)
+    if view.turn == view.mySeat and view.phase == "bidding" then
+        label(controls, "Wie viele Stiche gewinnst du?", 12, 10, 355, 38, 18, C.text)
+        button(controls, "−", 390, 8, 45, 43, function() bidValue = math.max(0, bidValue - 1); render(current) end, C.purple)
+        label(controls, tostring(bidValue), 444, 8, 65, 43, 25, C.gold)
+        button(controls, "+", 520, 8, 45, 43, function() bidValue = math.min(view.round, bidValue + 1); render(current) end, C.purple)
+        button(controls, "Ansage bestätigen", 600, 8, 280, 43, function() request("bid", bidValue) end)
+    elseif view.turn == view.mySeat and view.phase == "chooseTrump" then
+        label(controls, "Wähle Trumpf:", 10, 10, 205, 38, 18)
+        for i, suit in ipairs(Rules.suits) do
+            button(controls, symbols[suit] .. " " .. Rules.suitNames[suit], 230 + (i - 1) * 162, 8, 150, 43,
+                function() request("trump", suit) end, suitColors[suit]).TextColor3 = C.text
+        end
+    elseif view.phase == "roundComplete" or view.phase == "finished" then
+        if mine then
+            label(controls, string.format("Deine Runde: %d von %d Stichen · %+d Punkte · Gesamt: %d", mine.taken, mine.bid, mine.delta or 0, mine.score),
+                10, 8, if view.phase == "finished" then 650 else 880, 43, 18, if (mine.delta or 0) >= 0 then C.green else C.red)
+        end
+        if view.phase == "finished" and view.hostId == player.UserId then
+            button(controls, "Zur Lobby", 690, 8, 190, 43, function() request("lobby") end)
+        end
+    else
+        label(controls, if view.turn == view.mySeat then "Wähle eine gold umrandete Karte aus deiner Hand." else "Beobachte den Tisch und plane deinen nächsten Zug.",
+            15, 8, 870, 43, 17, C.muted)
+    end
+    label(content, if mine then "DEINE HAND  ·  " .. #view.hand .. " KARTEN" else "DU SCHAUST ZU · Die nächste Partie startet in der Lobby.",
+        40, 593, 1120, 24, 12, C.muted, Enum.TextXAlignment.Left)
+    local hand = create("ScrollingFrame", content, { Position = UDim2.fromOffset(38, 621), Size = UDim2.fromOffset(1204, 155),
+        CanvasSize = UDim2.fromOffset(math.max(1204, #view.hand * 106 + 12), 0), ScrollBarThickness = 5,
+        BackgroundTransparency = 1, BorderSizePixel = 0, ScrollingDirection = Enum.ScrollingDirection.X })
+    lastHand = hand
+    hand.CanvasPosition = Vector2.new(math.min(handScroll.X, math.max(0, #view.hand * 106 + 12 - 1204)), 0)
+    local sorted = table.clone(view.hand)
+    table.sort(sorted, function(a, b)
+        local ka, kb = a.suit or a.kind, b.suit or b.kind
+        if ka == kb then return a.rank < b.rank end
+        return ka < kb
+    end)
+    local startX = math.max(10, (1204 - #sorted * 106) / 2)
+    for i, data in ipairs(sorted) do
+        local playable = if view.phase == "playing" then view.legal[data.id] == true else nil
+        card(hand, data, startX + (i - 1) * 106, 10, 94, 133, playable, function() request("play", data.id) end)
+    end
+end
+
+state.OnClientEvent:Connect(function(view)
+    pending = false
+    if view.error then notify(view.error); return end
+    current = view
+    render(view)
+end)
+
+RunService.RenderStepped:Connect(function()
+    local camera = workspace.CurrentCamera
+    if camera then
+        camera.CameraType = Enum.CameraType.Scriptable
+        camera.CFrame = CFrame.lookAt(Vector3.new(0, 31, 32), Vector3.new(0, 3, 0))
+        camera.FieldOfView = 55
+    end
+    if current and current.deadline then
+        timer.Text = tostring(math.max(0, math.ceil(current.deadline - workspace:GetServerTimeNow()))) .. " s"
+    else timer.Text = "" end
+end)
+pcall(function()
+    StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
+    StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+    StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Health, false)
+end)
+action:FireServer("sync")
+]]></string>
+          </Properties>
+        </Item>
+      </Item>
+    </Item>
+  </Item>
+</roblox>
