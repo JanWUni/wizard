@@ -11,13 +11,18 @@ local Card = require(assets:WaitForChild("CardModel"))
 local Tavern = require(assets:WaitForChild("Tavern"))
 local Layout = require(assets:WaitForChild("TableLayout"))
 while not workspace:GetAttribute("AssetLabReady") do task.wait() end
+local leaveEvent = game:GetService("ReplicatedStorage"):WaitForChild("AssetLabRemotes"):WaitForChild("LeaveSeat")
 
 local p = Art.palette
 local scene = Instance.new("Folder")
 scene.Name, scene.Parent = "LocalAssetStudies", workspace
 local hand, tableCards, sample, hover = {}, {}, nil, nil
 local selected, handCount, rank = 5, 6, 13
-local mode, preset, flipped, readable = "table", "tavern", false, true
+local mode, preset, flipped, readable = "walk", "tavern", false, true
+local seated, seatIndex, humanoid = false, 1, nil
+local occupiedSeat
+local hiddenParts = {}
+local leaveTable
 local spin, heldDrag, lastPointer = 0, false, nil
 local yaw, pitch = 0, 0
 local artworks, backArt = {}, ""
@@ -58,6 +63,9 @@ round(header, 12)
 text(header, "WIZARD  /  ASSET LAB", UDim2.fromOffset(18, 10), UDim2.new(0.65, 0, 0, 24), 19, p.goldLight)
 local description = text(header, "", UDim2.fromOffset(18, 38), UDim2.new(1, -32, 0, 21), 12, p.muted)
 local hint = text(gui, "", UDim2.new(0, 38, 0, 94), UDim2.new(0.8, 0, 0, 44), 15, p.paperLight)
+local leaveButton = button(header, "Aufstehen · Q", 0, 17, 164, function() leaveTable() end, true)
+leaveButton.AnchorPoint, leaveButton.Position = Vector2.new(1, 0), UDim2.new(1, -14, 0, 17)
+leaveButton.Visible = false
 local toolbar = make("Frame", gui, { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -18),
     Size = UDim2.fromOffset(996, 142), BackgroundColor3 = p.ink, BackgroundTransparency = 0.06, BorderSizePixel = 0 })
 round(toolbar, 14)
@@ -105,6 +113,7 @@ local function newHand()
         local model = Card.create(scene, data)
         model:SetAttribute("HandIndex", i)
         dress(model, data)
+        if not seated then model.Parent = nil end
         table.insert(hand, { model = model, data = data, raised = 0 })
     end
 end
@@ -115,6 +124,7 @@ local function newSample()
         CFrame.lookAt(Tavern.inspection, Tavern.inspection + Vector3.new(0, 0, 5)))
     sample.Name = "InspectionCard"
     dress(sample, data)
+    if not seated then sample.Parent = nil end
 end
 
 local function clearTable()
@@ -125,7 +135,8 @@ local function opponentHands()
     local old = scene:FindFirstChild("OpponentCards")
     if old then old:Destroy() end
     local group = make("Folder", scene, { Name = "OpponentCards" })
-    for seat = 2, 6 do
+    for seat = 1, 6 do
+        if seat == seatIndex then continue end
         local angle = (seat - 1) * math.pi / 3
         for i = 1, 3 do
             local transform = CFrame.Angles(0, angle, 0) * CFrame.new((i - 2) * 0.38, 3.34 + i * 0.018, 6.0)
@@ -150,18 +161,19 @@ rebuild = function()
 end
 
 local function selectCard(index)
-    if busy then return end
+    if busy or not seated then return end
     selected, flipped, spin = math.clamp(index, 1, handCount), false, 0
     newSample(); updateLabels()
 end
 
 setMode = function(value)
+    if not seated then return end
     mode, yaw, pitch = value, 0, 0
     updateLabels()
 end
 
 playSelected = function()
-    if busy or mode == "inspect" then return end
+    if not seated or busy or mode == "inspect" then return end
     local index = selected
     local entry = hand[index]
     if not entry or entry.played then notice("Diese Karte liegt bereits auf dem Tisch. Mit Neu austeilen zurücksetzen."); return end
@@ -173,7 +185,8 @@ playSelected = function()
     local slot = (playCounter - 1) % 6
     local position = Vector3.new((slot % 3 - 1) * 1.35, Tavern.tableTop + 0.035, if slot < 3 then 0.3 else -1.6)
     local token = redrawToken
-    local tween = animate(entry.model, flat(position, (slot - 2) * 0.055, flipped), 0.6)
+    local seatRotation = CFrame.Angles(0, (seatIndex - 1) * math.pi / 3, 0)
+    local tween = animate(entry.model, seatRotation * flat(position, (slot - 2) * 0.055, flipped), 0.6)
     tween.Completed:Once(function()
         if token ~= redrawToken then return end
         busy = false
@@ -195,13 +208,13 @@ local lightButton = button(toolbar, "", 587, 12, 190, function()
     Tavern.lighting(preset); updateLabels()
 end)
 button(toolbar, "Bedienung", 785, 12, 196, function()
-    notice("1–3 Ansicht · ← → Karte · F umdrehen · Leertaste ausspielen · R neu · Rechtsziehen: umsehen / Karte drehen")
+    notice("1–3 Ansicht · ← → Karte · F umdrehen · Enter ausspielen · Q / Springen aufstehen · R neu")
 end)
 button(toolbar, "‹", 14, 56, 38, function() selectCard(selected - 1) end)
 local cardLabel = text(toolbar, "", UDim2.fromOffset(63, 56), UDim2.fromOffset(266, 35), 13, p.goldLight)
 button(toolbar, "›", 339, 56, 38, function() selectCard(selected + 1) end)
 button(toolbar, "Umdrehen · F", 396, 56, 183, function() flipped = not flipped; updateLabels() end)
-button(toolbar, "Auf Tisch · Leertaste", 587, 56, 190, playSelected, true)
+button(toolbar, "Auf Tisch · Enter", 587, 56, 190, playSelected, true)
 button(toolbar, "Neu austeilen · R", 785, 56, 196, rebuild)
 local countButton = button(toolbar, "", 14, 100, 183, function()
     handCount = if handCount == 6 then 10 elseif handCount == 10 then 20 else 6
@@ -273,10 +286,13 @@ applyImage = function(isBack)
 end
 
 updateLabels = function()
-    local names = { table = "Sitzperspektive", top = "Tischübersicht", inspect = "Kartenprüfung" }
+    toolbar.Visible, leaveButton.Visible = seated, seated
+    if not seated then artPanel.Visible = false end
+    local names = { walk = "Freies Erkunden", table = "Sitzperspektive", top = "Tischübersicht", inspect = "Kartenprüfung" }
     local lights = { tavern = "Taverne", neutral = "Neutral", moon = "Mondlicht" }
     description.Text = names[mode] .. "  ·  " .. lights[preset] .. "  ·  Grafikstudie, kein laufendes Spiel"
-    hint.Text = if mode == "inspect" then "Einzelkarte: mit rechter Maustaste ziehen zum Drehen. F zeigt die Rückseite."
+    hint.Text = if not seated then "W/A/S/D laufen · Leertaste springen · An einem Stuhl E halten: Platz nehmen"
+        elseif mode == "inspect" then "Einzelkarte: mit rechter Maustaste ziehen zum Drehen. F zeigt die Rückseite."
         elseif mode == "top" then "Karten ausspielen und Größen, Schatten sowie Überlappungen beurteilen."
         else "Karte anklicken zum Anheben, noch einmal zum Ausspielen. Rechtsziehen zum Umsehen."
     cardLabel.Text = string.format("%d / %d · %s%s", selected, handCount, Art.names[dataFor(selected).suit or dataFor(selected).kind],
@@ -292,7 +308,67 @@ end
 
 local cameraValue = Instance.new("CFrameValue")
 cameraValue.Value = CFrame.lookAt(Tavern.eye, Tavern.focus)
-local lastMode = "table"
+local lastMode = "walk"
+local function restoreCharacter()
+    for part, transparency in pairs(hiddenParts) do
+        if part.Parent then part.LocalTransparencyModifier = transparency end
+    end
+    table.clear(hiddenParts)
+end
+local function hideOwnCharacter()
+    local character = player.Character
+    if not character then return end
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if hiddenParts[part] == nil then hiddenParts[part] = part.LocalTransparencyModifier end
+            part.LocalTransparencyModifier = 1
+        end
+    end
+end
+local function walk()
+    seated, occupiedSeat, mode, lastMode = false, nil, "walk", "walk"
+    heldDrag, lastPointer, hover = false, nil, nil
+    restoreCharacter()
+    for _, entry in ipairs(hand) do if not entry.played then entry.model.Parent = nil end end
+    if sample then sample.Parent = nil end
+    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    local camera = workspace.CurrentCamera
+    if camera then
+        camera.CameraType, camera.FieldOfView = Enum.CameraType.Custom, 70
+        if humanoid and humanoid.Parent then camera.CameraSubject = humanoid end
+    end
+    updateLabels()
+end
+local function updateSeat()
+    local seat = humanoid and humanoid.SeatPart
+    if humanoid and humanoid.Health > 0 and seat and seat:IsDescendantOf(workspace.TavernStudy)
+        and seat:GetAttribute("LabSeatIndex") then
+        if occupiedSeat == seat then return end
+        seated, occupiedSeat, seatIndex = true, seat, seat:GetAttribute("LabSeatIndex")
+        mode, lastMode = "table", "table"
+        cameraValue.Value = Layout.camera("table", Tavern.eye, Tavern.focus, Tavern.inspection, 0, 0, seatIndex)
+        rebuild()
+        notice("Du sitzt am Tisch. Q oder Springen zum Aufstehen.")
+    elseif seated then walk() end
+end
+leaveTable = function()
+    if seated then leaveEvent:FireServer() end
+end
+local characterConnections = {}
+local function characterAdded(character)
+    for _, connection in ipairs(characterConnections) do connection:Disconnect() end
+    table.clear(characterConnections)
+    humanoid = nil
+    walk()
+    local nextHumanoid = character:WaitForChild("Humanoid")
+    if player.Character ~= character then return end
+    humanoid = nextHumanoid
+    walk()
+    table.insert(characterConnections, humanoid.Seated:Connect(updateSeat))
+    table.insert(characterConnections, humanoid:GetPropertyChangedSignal("SeatPart"):Connect(updateSeat))
+    table.insert(characterConnections, humanoid.Died:Connect(walk))
+    updateSeat()
+end
 local function pick(point)
     local camera = workspace.CurrentCamera
     if not camera then return nil end
@@ -305,8 +381,9 @@ local function pick(point)
 end
 
 UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
-    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+    if processed or not seated then return end
+    if input.KeyCode == Enum.KeyCode.Q then leaveTable()
+    elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
         heldDrag, lastPointer = true, UserInputService:GetMouseLocation()
     elseif input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         if mode == "inspect" then return end
@@ -321,7 +398,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
     elseif input.KeyCode == Enum.KeyCode.Left then selectCard(selected - 1)
     elseif input.KeyCode == Enum.KeyCode.Right then selectCard(selected + 1)
     elseif input.KeyCode == Enum.KeyCode.F then flipped = not flipped; updateLabels()
-    elseif input.KeyCode == Enum.KeyCode.Space then hover = nil; playSelected()
+    elseif input.KeyCode == Enum.KeyCode.Return then hover = nil; playSelected()
     elseif input.KeyCode == Enum.KeyCode.R then rebuild() end
 end)
 UserInputService.InputEnded:Connect(function(input)
@@ -330,6 +407,9 @@ end)
 
 rebuild()
 Tavern.lighting(preset)
+player.CharacterAdded:Connect(characterAdded)
+player.CharacterRemoving:Connect(function() humanoid = nil; walk() end)
+if player.Character then task.spawn(characterAdded, player.Character) end
 pcall(function()
     StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
     StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
@@ -339,6 +419,8 @@ RunService:BindToRenderStep("AssetLabCamera", Enum.RenderPriority.Camera.Value +
     local camera = workspace.CurrentCamera
     if not camera then return end
     resizeUI()
+    if not seated then return end -- Roblox PlayerModule owns movement and camera while walking.
+    hideOwnCharacter()
     if heldDrag then
         local pointer = UserInputService:GetMouseLocation()
         if lastPointer then
@@ -351,7 +433,7 @@ RunService:BindToRenderStep("AssetLabCamera", Enum.RenderPriority.Camera.Value +
         end
         lastPointer = pointer
     end
-    local target, fov = Layout.camera(mode, Tavern.eye, Tavern.focus, Tavern.inspection, yaw, pitch)
+    local target, fov = Layout.camera(mode, Tavern.eye, Tavern.focus, Tavern.inspection, yaw, pitch, seatIndex)
     if lastMode ~= mode then
         cameraValue.Value = camera.CFrame
         -- The camera follows a single spring below; no competing camera scripts.
@@ -367,7 +449,7 @@ RunService:BindToRenderStep("AssetLabCamera", Enum.RenderPriority.Camera.Value +
                 local wanted = if i == selected or i == hover then 1 else 0
                 entry.raised += (wanted - entry.raised) * (1 - math.exp(-dt * 15))
                 local position = Layout.hand(camera.CFrame, i, #hand, entry.raised, i == selected and flipped,
-                    mode == "top", camera.ViewportSize.X / math.max(1, camera.ViewportSize.Y))
+                    mode == "top", camera.ViewportSize.X / math.max(1, camera.ViewportSize.Y), seatIndex)
                 entry.model:PivotTo(position)
             end
         end

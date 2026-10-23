@@ -28,6 +28,14 @@ if not args.place_only:
         subprocess.run([args.luau, str(harness)], cwd=ROOT, check=True)
     finally:
         harness.unlink(missing_ok=True)
+    seating_harness = ROOT / "tests" / "__seating_generated.luau"
+    template = (ROOT / "tests" / "seating.spec.lua").read_text()
+    source = (ROOT / "lab" / "server" / "Seating.lua").read_text()
+    seating_harness.write_text(template.replace("-- @SEATING_SOURCE@", source))
+    try:
+        subprocess.run([args.luau, str(seating_harness)], cwd=ROOT, check=True)
+    finally:
+        seating_harness.unlink(missing_ok=True)
 
 place = ROOT / "Wizard.rbxlx"
 tree = ET.parse(place)
@@ -60,6 +68,7 @@ if args.lab:
     mapping = {
         ("Script", "Main"): "lab/server/Main.server.lua",
         ("LocalScript", "Main"): "lab/client/Main.client.lua",
+        ("ModuleScript", "Seating"): "lab/server/Seating.lua",
         **{("ModuleScript", name): f"src/assets/{name}.lua"
            for name in ("ArtDirection", "CardModel", "Tavern", "TableLayout")},
     }
@@ -80,4 +89,7 @@ if args.lab:
         assert source is not None and source.text == (ROOT / mapping[key]).read_text(), f"Stale lab: {key}"
     assert found == set(mapping) and cards == 12
     assert lab.find(".//Item[@class='Model']/Properties/string[@name='Name'][.='TavernStudy']") is not None
-    print("Lab place verified: six current scripts, editable tavern, six baked samples and twelve card surfaces.")
+    seats = list(lab.iterfind(".//Item[@class='Seat']"))
+    assert len(seats) == 6
+    assert len(list(lab.iterfind(".//Item[@class='SpawnLocation']"))) == 1
+    print("Lab place verified: seven current scripts, spawn, six Roblox seats and twelve card surfaces.")

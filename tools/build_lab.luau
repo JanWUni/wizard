@@ -57,6 +57,25 @@ for _, object in ipairs(room:GetDescendants()) do
 end
 assert(parts < 600, "Room geometry budget exceeded")
 assert(surfaces == 12, "Six samples need twelve distinct physical faces")
+assert(room.WalkableFloor.CanCollide and room.WalkableFloor.Size.X >= 46)
+assert(room.TavernEntrance:IsA("SpawnLocation") and room.TavernEntrance.Neutral)
+local seatsFound = 0
+for _, object in ipairs(room:GetDescendants()) do
+    if object:IsA("Seat") then
+        seatsFound += 1
+        assert(not object.Disabled and object.CanCollide and object.CanTouch)
+        assert(object.TakeSeat:IsA("ProximityPrompt") and object.TakeSeat.KeyboardKeyCode == roblox.Enum.KeyCode.E)
+        assert(object:GetAttribute("ExitCFrame").Position.Y >= 3)
+        local index = object:GetAttribute("LabSeatIndex")
+        local eye = Layout.camera("table", Tavern.eye, Tavern.focus, Tavern.inspection, 0, 0, index)
+        local radial = roblox.Vector3.new(eye.Position.X, 0, eye.Position.Z).Unit
+        local seatRadial = roblox.Vector3.new(object.CFrame.Position.X, 0, object.CFrame.Position.Z).Unit
+        assert(radial:Dot(seatRadial) > 0.99, "Seat camera must match its actual chair")
+        assert((object:GetAttribute("ExitCFrame").Position * roblox.Vector3.new(1, 0, 1)).Magnitude > 12,
+            "Standing up must place the avatar outside the chair")
+    end
+end
+assert(seatsFound == 6, "The table needs six working Roblox seats")
 local camera, fov = Layout.camera("table", Tavern.eye, Tavern.focus, Tavern.inspection, 0, 0)
 for _, count in ipairs({ 6, 10, 20 }) do
     for _, aspect in ipairs({ 1.4, 1.6, 16 / 9 }) do

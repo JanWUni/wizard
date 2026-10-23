@@ -4,7 +4,7 @@ Ein erster spielbarer Prototyp mit deutschem Interface und einem magischen Karte
 
 ## Neues 3D-Asset-Lab
 
-Für die grafische Neuausrichtung gibt es eine **separate Testszene `AssetLab.rbxl`**: dunkle magische Taverne, räumlicher Kartentisch, Sitzperspektive, sechs Kartenmuster mit Vorder-/Rückseiten und Kartenbewegungen. In Studio öffnen und **Spielen** drücken. Das bestehende Spiel bleibt bis zur Auswahl der Gestaltung unverändert. [Bedienung, Zielbild und Asset-Prüfung](docs/art/ASSET-LAB.md).
+Für die grafische Neuausrichtung gibt es eine **separate Testszene `AssetLab.rbxl`**: dunkle magische Taverne, räumlicher Kartentisch, Sitzperspektive, sechs Kartenmuster mit Vorder-/Rückseiten und Kartenbewegungen. In Studio öffnen und **Spielen** drücken. Du startest mit deinem normalen Roblox-Avatar: zum Stuhl laufen, **E** zum Hinsetzen, **Q / Aufstehen / Sprungtaste** zum Verlassen. **Enter** spielt eine Karte aus. Das bestehende Spiel bleibt bis zur Auswahl der Gestaltung unverändert. [Bedienung, Zielbild und Asset-Prüfung](docs/art/ASSET-LAB.md).
 
 ## Direkt in Roblox Studio starten
 
