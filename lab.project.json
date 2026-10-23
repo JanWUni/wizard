@@ -1,0 +1,14 @@
+{
+  "name": "Wizard Asset Lab",
+  "tree": {
+    "$className": "DataModel",
+    "Workspace": {
+      "TavernStudy": { "$path": "lab/models/TavernStudy.rbxm" }
+    },
+    "ReplicatedStorage": { "WizardAssets": { "$path": "src/assets" } },
+    "ServerScriptService": { "AssetLab": { "$path": "lab/server" } },
+    "StarterPlayer": {
+      "StarterPlayerScripts": { "AssetLab": { "$path": "lab/client" } }
+    }
+  }
+}
